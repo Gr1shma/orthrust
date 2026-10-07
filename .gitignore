@@ -1,6 +1,9 @@
 # Rust build output
 /target
 
+# Database
+*.db
+
 # Runtime data
 /data
 **/data/
