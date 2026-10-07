@@ -1,0 +1,17 @@
+# Rust build output
+/target
+
+# Runtime data
+/data
+**/data/
+
+# Logs and profiling
+*.log
+flamegraph.svg
+perf.data*
+
+# Editor and OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
