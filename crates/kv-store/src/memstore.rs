@@ -16,17 +16,9 @@ const FORMAT_VERSION: u8 = 1;
 /// `BTreeMap` (not `HashMap`) because serialization must be deterministic:
 /// two replicas with identical logical state must produce identical bytes,
 /// or Raft snapshot comparison / transfer breaks.
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Default)]
 pub struct MemStore {
     data: BTreeMap<String, String>,
-}
-
-impl Default for MemStore {
-    fn default() -> Self {
-        Self {
-            data: BTreeMap::new(),
-        }
-    }
 }
 
 impl MemStore {
@@ -85,6 +77,26 @@ impl Store for MemStore {
             .ok_or_else(|| StoreError::KeyNotFound(key.to_string()))
     }
 
+    fn contains(&self, key: &str) -> bool {
+        self.data.contains_key(key)
+    }
+
+    fn keys(&self) -> Vec<String> {
+        self.data.keys().cloned().collect()
+    }
+
+    fn clear(&mut self) {
+        self.data.clear();
+    }
+
+    fn scan(&self, prefix: &str) -> Vec<(String, String)> {
+        self.data
+            .range(prefix.to_string()..)
+            .take_while(|(k, _)| k.starts_with(prefix))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect()
+    }
+
     /// Called by the Raft core when a log entry is committed.
     /// Must be deterministic, every replica runs this with the same
     /// command in the same order and must reach the same state.
@@ -99,6 +111,16 @@ impl Store for MemStore {
                 // Idempotent retries after a client timeout must produce
                 // the same result on every replica.
                 Ok(self.data.remove(&key))
+            }
+            Command::Clear => {
+                self.data.clear();
+                Ok(None)
+            }
+            Command::SetMany { entries } => {
+                for (k, v) in entries {
+                    self.data.insert(k, v);
+                }
+                Ok(None)
             }
         }
     }
@@ -150,6 +172,58 @@ mod tests {
     }
 
     #[test]
+    fn contains_key() {
+        let mut store = MemStore::new();
+        assert!(!store.contains("k"));
+        store.set("k", "v".to_string());
+        assert!(store.contains("k"));
+    }
+
+    #[test]
+    fn keys_returns_ordered_list() {
+        let mut store = MemStore::new();
+        store.set("b", "2".to_string());
+        store.set("a", "1".to_string());
+        store.set("c", "3".to_string());
+
+        assert_eq!(store.keys(), vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn clear_removes_all_keys() {
+        let mut store = MemStore::new();
+        store.set("a", "1".to_string());
+        store.set("b", "2".to_string());
+
+        store.clear();
+        assert!(store.keys().is_empty());
+        assert!(!store.contains("a"));
+    }
+
+    #[test]
+    fn scan_returns_matching_prefix() {
+        let mut store = MemStore::new();
+        store.set("user:1", "alice".to_string());
+        store.set("user:2", "bob".to_string());
+        store.set("post:1", "hello".to_string());
+
+        let users = store.scan("user:");
+        assert_eq!(
+            users,
+            vec![
+                ("user:1".to_string(), "alice".to_string()),
+                ("user:2".to_string(), "bob".to_string())
+            ]
+        );
+
+        let posts = store.scan("post:");
+        assert_eq!(posts, vec![("post:1".to_string(), "hello".to_string())]);
+
+        let empty = store.scan("missing:");
+        assert!(empty.is_empty());
+    }
+
+    #[test]
     fn apply_set_command() {
         let mut store = MemStore::new();
 
@@ -187,6 +261,31 @@ mod tests {
         // This is what makes log replay idempotent across replicas.
         let prev = store.apply(Command::Delete { key: "k".into() }).unwrap();
         assert_eq!(prev, None);
+    }
+
+    #[test]
+    fn apply_clear_command() {
+        let mut store = MemStore::new();
+        store.set("k1", "v1".to_string());
+        store.set("k2", "v2".to_string());
+
+        let res = store.apply(Command::Clear).unwrap();
+        assert_eq!(res, None);
+        assert!(!store.contains("k1"));
+        assert!(!store.contains("k2"));
+    }
+
+    #[test]
+    fn apply_set_many_command() {
+        let mut store = MemStore::new();
+        let entries = vec![
+            ("k1".to_string(), "v1".to_string()),
+            ("k2".to_string(), "v2".to_string()),
+        ];
+        let res = store.apply(Command::SetMany { entries }).unwrap();
+        assert_eq!(res, None);
+        assert_eq!(store.get("k1").unwrap(), "v1");
+        assert_eq!(store.get("k2").unwrap(), "v2");
     }
 
     #[test]

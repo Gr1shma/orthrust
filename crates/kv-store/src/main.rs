@@ -17,9 +17,23 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Retrieve a value for a key
     Get { key: String },
+    /// Store a key-value pair
     Set { key: String, value: String },
+    /// Delete a key-value pair
     Delete { key: String },
+    /// Check if a key exists
+    Exists { key: String },
+    /// List all keys in lexicographical order
+    Keys,
+    /// Clear all keys from the store
+    Clear,
+    /// Scan keys with optional prefix
+    Scan {
+        #[arg(default_value = "")]
+        prefix: String,
+    },
 }
 
 fn load(path: &PathBuf) -> std::io::Result<MemStore> {
@@ -53,7 +67,7 @@ fn main() -> ExitCode {
             }
             Err(e) => {
                 eprintln!("error: {e}");
-                return ExitCode::FAILURE;
+                Err(())
             }
         },
         Commands::Set { key, value } => {
@@ -68,16 +82,47 @@ fn main() -> ExitCode {
             }
             Err(e) => {
                 eprintln!("error: {e}");
-                return ExitCode::FAILURE;
+                Err(())
             }
         },
+        Commands::Exists { key } => {
+            if store.contains(&key) {
+                println!("true");
+                Ok(())
+            } else {
+                println!("false");
+                Err(())
+            }
+        }
+        Commands::Keys => {
+            for key in store.keys() {
+                println!("{key}");
+            }
+            Ok(())
+        }
+        Commands::Clear => {
+            store.clear();
+            println!("OK");
+            Ok(())
+        }
+        Commands::Scan { prefix } => {
+            for (k, v) in store.scan(&prefix) {
+                println!("{k}={v}");
+            }
+            Ok(())
+        }
     };
 
-    if result.is_ok() {
-        if let Err(e) = save(&cli.file, &store) {
-            eprintln!("error saving store: {e}");
-            return ExitCode::FAILURE;
-        }
+    if result.is_ok()
+        && let Err(e) = save(&cli.file, &store)
+    {
+        eprintln!("error saving store: {e}");
+        return ExitCode::FAILURE;
     }
-    ExitCode::SUCCESS
+
+    if result.is_ok() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
 }
